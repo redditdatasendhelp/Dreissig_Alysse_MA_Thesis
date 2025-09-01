@@ -1,0 +1,127 @@
+# Purpose: script for cleaning Reddit comment datasets.
+# Description:
+#   This script reads Reddit comment datasets (in .qs format), applies a series of cleaning steps to remove
+#   bots, moderation content, URLs, filler words, and other junk, and saves the cleaned data.
+#   It is designed to be easily adapted for specific datasets by tweaking input paths or filter lists.
+#   All sensitive file paths and personal information have been replaced with placeholders.
+
+# ---- Load Required Libraries ----
+library(qs)        # For fast reading and writing of .qs files (compressed R data)
+library(dplyr)     # For data manipulation
+library(stringr)   # For string operations and regular expressions
+
+# ---- User Configuration Section ----
+
+# List of known bots to exclude (add or remove as needed for your dataset)
+default_bot_list <- c(
+  "autotldr", "remindmebot", "amputatorbot", "automoderator",
+  "converter-bot", "linkifybot", "portmanteau-bot", "yomommajokebot", "timee_bot",
+  "accountsettingsbot", "bot-sleuth-bot", "floodgatesbot", "pixel-counter-bot", "timestamp_bot",
+  # Add dataset-specific bots here
+  "sneakpeekbot", "twitterinfo_bot", "mobileuserbot", "clickablelinkbot", "haikusbot",
+  "encouragementrobot", "reddit-book-bot", "psgwspbot", "the_timezone_bot", "wikipedia_answer_bot",
+  "vettedbot", "both_ad_694"
+)
+
+# Moderation-related regex patterns (customize as needed)
+moderation_regex <- regex(
+  paste(
+    "shadowban", "amishadowbanned", "r/shadowbanned", "you'?re shadowbanned", "your account.*shadowbanned",
+    "this post (has been|was) removed", "violates rule", "rule [0-9]+",
+    sep = "|"
+  ),
+  ignore_case = TRUE
+)
+
+# Junk or filler words to remove (customize as needed)
+junk_words <- c(
+  "imgur", "jpg", "jpeg", "png", "gif", "giphy", "faq", "bot",
+  "s", "t", "r", "yeah", "oh", "lol", "ok", "okay", "nice"
+)
+
+# ---- Main Cleaning Function ----
+
+clean_reddit_comments <- function(
+  file_path,
+  output_path,
+  bot_list = default_bot_list,
+  extra_regex_filters = NULL,
+  min_body_length = 10
+) {
+  # Load the dataset
+  reddit_data <- qs::qread(file_path)
+  
+  # Cleaning steps
+  cleaned <- reddit_data |>
+    # Step 1: Remove known bot authors (case-insensitive match)
+    filter(!str_to_lower(author) %in% bot_list) |>
+    
+    # Step 2: Remove moderation-related and metadiscussion content
+    filter(
+      !str_detect(body, moderation_regex)
+    ) |>
+    
+    # Step 3: Apply any extra regex-based filters (if provided)
+    { if (!is.null(extra_regex_filters)) 
+        filter(., !!!extra_regex_filters) else . } |>
+    
+    # Step 4: Clean up the comment body text
+    mutate(
+      body = body |>
+        str_remove_all("http[s]?://\\S+") |>                   # Remove URLs
+        str_remove_all("\\b\\d+(\\.\\d+)?\\b") |>              # Remove numbers (including decimals)
+        str_remove_all("\\b[a-zA-Z0-9]{6,}\\b") |>             # Remove junk alphanumeric tokens
+        str_remove_all(
+          paste0("\\b(", paste(junk_words, collapse = "|"), ")\\b")
+        ) |>                                                   # Remove junk/filler words
+        str_replace_all("[^A-Za-z0-9 .,!?'\"]", " ") |>        # Remove emojis/symbols/punctuation
+        str_squish()
+    ) |>
+    
+    # Step 5: Remove empty or meaningless comments
+    filter(
+      !is.na(body),
+      nchar(body) >= min_body_length,
+      body != ",",
+      str_detect(body, "[A-Za-z]")   # Must contain at least one letter
+    ) |>
+    
+    # Step 6: Remove duplicates regardless of author
+    distinct(body, .keep_all = TRUE)
+  
+  # Save the cleaned data
+  qs::qsave(cleaned, output_path)
+  
+  # Optionally return the cleaned data for inspection
+  invisible(cleaned)
+}
+
+# ---- Example Usage ----
+
+# Set your input and output file paths
+input_file <- "path/to/your/input_file.qs"
+output_file <- "path/to/your/output_file_cleaned.qs"
+
+# Example: call the cleaning function (customize bot list or filters as needed)
+cleaned_data <- clean_reddit_comments(
+  file_path = input_file,
+  output_path = output_file
+)
+
+# ----- Manual Inspection (Optional, RStudio only) -----
+# View(cleaned_data)
+
+# ---- Notes & Customization ----
+# - You can further customize bot lists, regex filters, or junk words for each dataset.
+# - If needed, add extra filtering steps by passing a list of expressions to extra_regex_filters.
+#   Example:
+#      my_filters <- list(
+#        expr(!str_detect(body, regex("archive(\\.ph|\\.is)?", ignore_case = TRUE))),
+#        expr(!str_detect(body, regex("paywall", ignore_case = TRUE)))
+#      )
+#      clean_reddit_comments(input_file, output_file, extra_regex_filters = my_filters)
+#
+# - For highly specific filtering (e.g., removing posts with certain phrases or by new bot types),
+#   just modify the defaults or pass custom lists.
+
+# ---- End of script ----
