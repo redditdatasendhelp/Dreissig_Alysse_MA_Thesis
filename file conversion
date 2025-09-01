@@ -1,0 +1,90 @@
+# Purpose: convert Reddit .jsonl files to .qs files, keeping only relevant columns and adding date columns
+# Description: this script loads Reddit comment data from .jsonl files (exported with ArcticShift or similar),
+# filters to keep only the required fields, and saves the result as compressed .qs files.
+# It processes files in chunks for memory efficiency and adds additional columns for date and week.
+
+# Load required libraries
+library(ndjson)      # For handling JSON lines (jsonl) files
+library(data.table)  # For fast data manipulation
+library(qs)          # For efficient serialization of data.tables
+library(lubridate)   # For easy date/time processing
+
+# --- USER CONFIGURATION SECTION ---
+
+# Specify the list of .jsonl files to process.
+# Replace these example paths with your actual file locations or use a generic pattern/method to find files.
+jsonl_files <- c(
+  "path/to/r_democrats_comments_2016.jsonl",
+  "path/to/r_democrats_comments_2020.jsonl",
+  "path/to/r_democrats_comments_2024.jsonl",
+  "path/to/r_Republican_comments_2016.jsonl",
+  "path/to/r_Republican_comments_2020.jsonl",
+  "path/to/r_Republican_comments_2024.jsonl",
+  "path/to/r_uspolitics_comments_2016.jsonl",
+  "path/to/r_uspolitics_comments_2020.jsonl",
+  "path/to/r_uspolitics_comments_2024.jsonl"
+)
+
+# Set the output directory for the .qs files (use a generic or relative path)
+output_dir <- "path/to/output_directory"
+
+# Define the fields to keep from the original data
+keep_fields <- c("author", "body", "score", "created_utc", "subreddit")
+
+# --- MAIN PROCESSING LOOP ---
+
+# Loop over each .jsonl file
+for (file_path in jsonl_files) {
+  
+  # Extract metadata (subreddit and year) from the file name
+  file_name <- basename(file_path)
+  parts <- unlist(strsplit(file_name, "_"))
+  subreddit <- tolower(parts[2])  # e.g., "democrats", "republican", "uspolitics"
+  year <- gsub("\\D", "", parts[4])  # Extract numeric year from the filename
+  
+  message("Processing: ", subreddit, " ", year)
+  
+  # Open the .jsonl file for reading in batches (chunks) to avoid memory issues with large files
+  con <- file(file_path, open = "r")
+  results <- list()  # List to accumulate data chunks
+  i <- 1
+  while (length(line <- readLines(con, n = 10000, warn = FALSE)) > 0) {
+    # Stream and parse each chunk of 10,000 lines into a data.frame
+    parsed <- tryCatch(
+      jsonlite::stream_in(textConnection(line), simplifyDataFrame = TRUE),
+      error = function(e) NULL
+    )
+    if (!is.null(parsed)) {
+      # Convert the data.frame to a data.table, keeping only desired columns
+      dt_chunk <- as.data.table(parsed)[, ..keep_fields]
+      results[[i]] <- dt_chunk
+      i <- i + 1
+    }
+  }
+  close(con)
+  
+  # If no valid data was read, skip to the next file
+  if (length(results) == 0) {
+    warning("No valid data in: ", file_path)
+    next
+  }
+  
+  # Combine all chunks into a single data.table
+  dt <- rbindlist(results, use.names = TRUE, fill = TRUE)
+  
+  # Add a date column (convert Unix timestamp to Date)
+  dt[, date := as.Date(as.POSIXct(created_utc, origin = "1970-01-01", tz = "UTC"))]
+  
+  # Add a week column (floor date to start of the week)
+  dt[, week := floor_date(date, unit = "week", week_start = 1)]
+  
+  # Construct the output file path
+  out_path <- file.path(output_dir, paste0("reddit_", subreddit, "_", year, ".qs"))
+  
+  # Save the data.table as a compressed .qs file
+  qsave(dt, out_path, preset = "high")
+  
+  message("Saved: ", out_path)
+}
+
+# End of script
