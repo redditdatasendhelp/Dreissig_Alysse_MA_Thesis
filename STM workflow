@@ -1,0 +1,124 @@
+# Purpose: Preprocess Reddit comment data and fit a Structural Topic Model (STM) using date as a covariate
+# Description: This script prepares Reddit comments for topic modeling using STM, including:
+# - Assigning document IDs
+# - Expanding the stopword list for thorough cleaning
+# - Tokenizing and removing junk/filler words
+# - Creating and trimming a document-feature matrix (DFM)
+# - Converting to STM format and removing empty docs
+# - Fitting the STM model and displaying top words/topics
+# - Incorporating date as a covariate for topic prevalence
+# All personal file paths have been replaced with placeholders.
+
+# --- 1. Load required libraries ---
+library(qs)         # For fast reading/writing of .qs files
+library(dplyr)      # For data manipulation
+library(quanteda)   # For text tokenization/cleaning
+library(stm)        # For structural topic modeling
+library(lubridate)  # For working with dates
+
+# --- 2. Load your data ---
+data_path <- "path/to/your/filtered_data.qs"  # <-- Update this path to your data file
+reddit_df <- qs::qread(data_path)
+
+# --- 3. Assign document IDs for tracking ---
+reddit_df$doc_id <- as.character(seq_len(nrow(reddit_df)))
+
+# --- 4. Ensure date is in Date format (adjust field name if needed) ---
+# Assumes a column named 'date' exists and is either Date or POSIXct; if not, update accordingly
+if (!inherits(reddit_df$date, "Date")) {
+  reddit_df$date <- as.Date(reddit_df$date)
+}
+
+# --- 5. Define an expanded stopword list (examples, can be customized further) ---
+meta_reddit_stopwords <- c("sub", "ban", "mod", "rule", "post", "bot", "user", "thread", "comment", "reddit", "removed")
+conversational_ai_stopwords <- c("wiki", "chat", "gpt")
+web_link_stopwords <- c("jpg", "jpeg", "png", "img", "http", "com", "www")
+junk_words <- c("just", "like", "know", "yeah", "ok", "really")
+super_stop <- unique(c(
+  stopwords("en"),
+  meta_reddit_stopwords,
+  conversational_ai_stopwords,
+  web_link_stopwords,
+  junk_words
+))
+
+# --- 6. Tokenization and cleaning ---
+toks <- reddit_df$body |>
+  quanteda::tokens(
+    remove_punct = TRUE,
+    remove_symbols = TRUE
+  ) |>
+  tokens_tolower() |>
+  tokens_remove(super_stop) |>
+  tokens_remove(pattern = c(
+    "www", "http", "https", "\\.com", "\\.net", "\\.org",
+    "\\.jpg", "\\.jpeg", "\\.png", "\\.gif", "\\.webp",
+    "\\.pjpg", "\\.mov", "\\.mp4", "\\.mp3"
+  ), valuetype = "regex") |>
+  tokens_remove(pattern = "\\d+", valuetype = "regex") |>
+  tokens_wordstem() |>
+  tokens_select(pattern = ".{3,}", valuetype = "regex")
+
+names(toks) <- reddit_df$doc_id
+
+# --- 7. Create DFM and trim rare terms ---
+dfm_mat <- dfm(toks) |> 
+  dfm_trim(min_termfreq = 20)
+
+# --- 8. Convert to STM format ---
+stm_input <- convert(dfm_mat, to = "stm")
+
+# --- 9. Remove empty docs, keep only those used in STM ---
+empty <- lengths(stm_input$documents) == 0
+docs_used_idx <- which(!empty)
+reddit_used <- reddit_df[docs_used_idx, ]  # Only keep rows with content
+
+stm_input$documents <- stm_input$documents[!empty]
+if (!is.null(stm_input$meta)) stm_input$meta <- stm_input$meta[!empty, , drop = FALSE]
+
+# --- 10. Add date as covariate to STM meta data ---
+# If using binned date (e.g., year, month, week), update accordingly
+# Here, we convert the date to numeric for STM (e.g., number of days since min date)
+reddit_used$date_num <- as.numeric(reddit_used$date - min(reddit_used$date, na.rm = TRUE))
+
+# If using binned periods (uncomment and use 'date_bin' instead):
+# reddit_used$date_bin <- as.factor(format(reddit_used$date, "%Y-%m"))   # Year-month binning example
+
+# Make sure meta is a data.frame and includes the covariate
+stm_input$meta <- reddit_used
+
+# --- 11. Save STM input and doc subset for future re-use ---
+qs::qsave(stm_input, "stm_input_cleaned.qs")
+qs::qsave(reddit_used, "reddit_used_cleaned.qs")
+
+# --- 12. Fit STM model using date as a prevalence covariate ---
+# Use 'date_num' (continuous) or 'date_bin' (categorical) in prevalence
+set.seed(101)
+fit <- stm(
+  documents = stm_input$documents,
+  vocab = stm_input$vocab,
+  data = stm_input$meta,
+  K = 15,  # <--- Change this for different topic numbers
+  prevalence = ~ date_num,
+  max.em.its = 75,
+  verbose = TRUE
+)
+
+# --- 13. Show top words for each topic ---
+labelTopics(fit, n = 10)
+
+# --- 14. (Optional) Plot topic prevalence ---
+plot(fit, type = "summary", n = 15)
+
+# --- 15. Show top comments for each topic ---
+top_n <- 5  # Number of top comments per topic; adjust as desired
+
+top_docs <- findThoughts(fit, texts = reddit_used$body, n = top_n, topics = 1:15)
+
+for (k in 1:15) {
+  cat(paste0("\n--- Topic ", k, " ---\n"))
+  cat(paste0(top_docs$docs[[k]], collapse = "\n---\n"))
+  cat("\n")
+}
+
+# --- End of script ---
