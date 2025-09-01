@@ -1,0 +1,68 @@
+# Purpose: Run STM diagnostics with the searchK function to select the optimal number of topics for Reddit comment data. 
+# Description: This script loads a cleaned Reddit dataset, preprocesses the text, and runs STM diagnostics
+# to help choose the number of topics (K) for topic modeling. All file paths are anonymized.
+
+# --- Load required libraries ---
+library(stm)         # Structural Topic Model
+library(quanteda)    # Tokenization and text processing
+library(ggplot2)     # Plotting (for enhanced visuals, if desired)
+library(dplyr)       # Data manipulation
+library(qs)          # Fast .qs file reading/writing
+
+# --- 1. Load the cleaned dataset ---
+data_path <- "path/to/your/file.qs"  # <-- Update with your file path
+reddit_df <- qread(data_path)
+
+# --- 2. Limit to a maximum number of documents for efficiency (optional, but helpful for very large datasets since this can take a long time) ---
+max_docs <- 5000
+if (nrow(reddit_df) > max_docs) {
+  set.seed(123)  # For reproducibility
+  reddit_df <- reddit_df %>% sample_n(max_docs)
+}
+
+# --- 3. Assign document IDs for tracking ---
+reddit_df$doc_id <- as.character(seq_len(nrow(reddit_df)))
+
+# --- 4. Tokenization and cleaning using quanteda ---
+#   - Remove punctuation, symbols, numbers, and English stopwords
+#   - Convert to lowercase and stem words
+#   - Keep words with at least 3 characters
+toks <- quanteda::tokens(
+  reddit_df$body,
+  remove_punct = TRUE,
+  remove_symbols = TRUE
+) |>
+  tokens_tolower() |>
+  tokens_remove(stopwords("en")) |>
+  tokens_remove(pattern = "\\d+", valuetype = "regex") |>
+  tokens_wordstem() |>
+  tokens_keep(min_nchar = 3)
+
+# Attach document IDs for traceability
+names(toks) <- reddit_df$doc_id
+
+# --- 5. Create Document-Feature Matrix (DFM) and trim rare terms ---
+#   - Removes words that appear fewer than 20 times
+dfm_mat <- dfm(toks) |> dfm_trim(min_termfreq = 20)
+
+# --- 6. Convert to STM input format ---
+stm_input <- convert(dfm_mat, to = "stm")
+
+# --- 7. Run diagnostics to choose K (number of topics) ---
+#   - Tests a range of K values (5 to 50, in steps of 5)
+k_values <- seq(5, 50, by = 5)
+diag_results <- searchK(
+  documents = stm_input$documents,
+  vocab = stm_input$vocab,
+  data = stm_input$meta,
+  K = k_values
+)
+
+# --- 8. Plot diagnostics to help select the best K ---
+plot(
+  diag_results,
+  main = "Title incl. Subreddit and year",
+  xlab = "Number of Topics (K)"
+)
+
+# --- End of script —
